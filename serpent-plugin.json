@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "id": "com.whai.comfyui-metadata",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "name": "ComfyUI Metadata",
   "description": "Parse ComfyUI PNG/WebP metadata locally, bind reusable webpage URLs per model/LoRA, and batch-tag assets.",
   "locales": {
@@ -30,6 +30,8 @@
     "library.read",
     "asset.read",
     "content.read",
+    "metadata.read",
+    "metadata.write",
     "tag.read",
     "tag.write",
     "storage.read",

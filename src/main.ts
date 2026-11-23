@@ -95,9 +95,22 @@ interface WidgetToolkit {
   }): unknown;
 }
 
+interface AssetMetadataRecord {
+  assetId: string;
+  description: string | null;
+  tags?: Array<{ id: string; name: string; source: 'user' | 'ai' }>;
+  entityVersion: number;
+}
+
 interface SerpentScopedApi {
   assets: {
     list: (input: { assetIds?: string[]; limit?: number; offset?: number }) => Promise<{ items?: SelectedAssetSummary[] }>;
+    getMetadata: (assetId: string) => Promise<AssetMetadataRecord>;
+    setMetadata: (input: {
+      assetId: string;
+      expectedVersion: number;
+      description?: string | null;
+    }) => Promise<AssetMetadataRecord>;
     readContent: (
       assetId: string,
       options?: { maxBytes?: number; offsetBytes?: number },
@@ -114,6 +127,7 @@ interface SerpentScopedApi {
     list: (input?: { limit?: number; offset?: number }) => Promise<{ items?: SerpentTagItem[]; total?: number }>;
     create: (name: string) => Promise<SerpentTagItem>;
     assign: (assetIds: string[], tagIds: string[]) => Promise<unknown>;
+    remove: (assetIds: string[], tagIds: string[]) => Promise<unknown>;
   };
   ui: {
     notify: (input: { severity: 'info' | 'warning' | 'error'; message: string; title?: string }) => Promise<unknown>;
@@ -465,6 +479,33 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
     const bindableItems = collectBindableItems(metadata);
     const editableItems = bindableItems.slice(0, MAX_INLINE_BIND_ITEMS);
 
+    let assetMeta: AssetMetadataRecord | null = null;
+    try {
+      assetMeta = await api.assets.getMetadata(assetId);
+    } catch {
+      assetMeta = null;
+    }
+
+    const activeAssetTagNames = new Set<string>(
+      (assetMeta?.tags ?? []).map((t) => t.name.toLowerCase()),
+    );
+
+    const buildAllCandidateTagNames = (cfg: TaggingConfig): Set<string> => {
+      const set = new Set<string>();
+      const variants: TaggingConfig[] = [
+        cfg,
+        { ...cfg, usePrefix: false },
+        { ...cfg, stripExtension: !cfg.stripExtension },
+        { ...cfg, usePrefix: false, stripExtension: !cfg.stripExtension },
+      ];
+      for (const v of variants) {
+        for (const name of buildTagsForMetadata(metadata, v)) {
+          set.add(name.toLowerCase());
+        }
+      }
+      return set;
+    };
+
     // Live mutable draft kept across tab switches
     const draftUrls = new Map<string, string>();
     for (const item of editableItems) {
@@ -496,7 +537,8 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
         const activeTab = ui.state<string>('overview');
         const statusMsg = ui.state<string>('');
         const selectedOpenTarget = ui.state<string>('');
-        const applyTagsOnSave = ui.state<boolean>(false);
+        const tagTick = ui.state<number>(0);
+        void tagTick.get();
 
         const boundOptions: Array<{ value: string; label: string }> = [];
         for (const item of editableItems) {
@@ -527,6 +569,9 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
         const previewTags = metadata.format !== 'none'
           ? buildTagsForMetadata(metadata, draftTagConfig)
           : [];
+        const matchedExistingCount = previewTags.filter((t) => activeAssetTagNames.has(t.toLowerCase())).length;
+        const candidateSet = metadata.format !== 'none' ? buildAllCandidateTagNames(draftTagConfig) : new Set<string>();
+        const removableCount = Array.from(activeAssetTagNames).filter((name) => candidateSet.has(name)).length;
 
         const overviewChildren: WidgetChild[] = [];
         if (metadata.format === 'none') {
@@ -577,10 +622,9 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
               '正向提示词与参数',
               samplingSummary ? ui.note(samplingSummary) : null,
               metadata.positivePrompt
-                ? ui.text({
-                    id: 'positivePromptPreview',
-                    label: '正向提示词',
-                    value: metadata.positivePrompt.slice(0, 8000),
+                ? ui.list({
+                    columns: ['正向提示词（支持多行滚动）'],
+                    rows: [[metadata.positivePrompt.slice(0, 8000)]],
                   })
                 : ui.note('未提取到正向提示词文本'),
               metadata.positivePrompt || metadata.params.seed
@@ -612,20 +656,118 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
             ),
           );
 
-          if (previewTags.length > 0) {
-            overviewChildren.push(
-              ui.group(
-                '快捷打标',
-                ui.switch({
-                  id: 'applyTagsOnSave',
-                  label: `保存时为此图写入 ${previewTags.length} 个标签`,
-                  value: applyTagsOnSave.get(),
-                  description: clip(previewTags.join(' · '), 200),
-                  onChange: (val) => applyTagsOnSave.set(val),
-                }),
+          overviewChildren.push(
+            ui.group(
+              '写入右侧栏（标签 / 描述）',
+              ui.note(
+                previewTags.length > 0
+                  ? `标签状态：已写入 ${matchedExistingCount}/${previewTags.length} 个模型标签（点击下方按钮立即生效）`
+                  : '当前打标规则未勾选任何标签项',
               ),
-            );
-          }
+              previewTags.length > 0 || removableCount > 0
+                ? ui.row(
+                    previewTags.length > 0
+                      ? ui.toggle({
+                          id: 'btnApplyTagsNow',
+                          label: `写入 ${previewTags.length} 个标签`,
+                          value: false,
+                          onChange: () => {
+                            statusMsg.set('正在写入标签…');
+                            void (async () => {
+                              try {
+                                const tagIds = await ensureTagIds(api, previewTags);
+                                if (tagIds.length > 0) {
+                                  await api.tags.assign([assetId], tagIds);
+                                  for (const t of previewTags) activeAssetTagNames.add(t.toLowerCase());
+                                  assetMeta = await api.assets.getMetadata(assetId).catch(() => assetMeta);
+                                  statusMsg.set(`已立即写入 ${tagIds.length} 个模型/LoRA 标签`);
+                                  tagTick.set(tagTick.get() + 1);
+                                  await api.ui.notify({
+                                    severity: 'info',
+                                    title: 'ComfyUI 打标',
+                                    message: `已写入 ${tagIds.length} 个模型/LoRA 标签`,
+                                  });
+                                }
+                              } catch (err) {
+                                const msg = err instanceof Error ? err.message : String(err);
+                                statusMsg.set(`写入标签失败：${msg}`);
+                                await api.ui.notify({ severity: 'error', title: '写入标签失败', message: msg });
+                              }
+                            })();
+                          },
+                        })
+                      : null,
+                    removableCount > 0
+                      ? ui.toggle({
+                          id: 'btnClearTagsNow',
+                          label: `清除本图 ${removableCount} 个模型标签`,
+                          value: false,
+                          onChange: () => {
+                            statusMsg.set('正在清除本图模型标签…');
+                            void (async () => {
+                              try {
+                                const freshMeta = await api.assets.getMetadata(assetId);
+                                assetMeta = freshMeta;
+                                const toRemove = (freshMeta.tags ?? [])
+                                  .filter((t) => candidateSet.has(t.name.toLowerCase()));
+                                if (toRemove.length > 0) {
+                                  await api.tags.remove([assetId], toRemove.map((t) => t.id));
+                                  for (const t of toRemove) activeAssetTagNames.delete(t.name.toLowerCase());
+                                  statusMsg.set(`已清除本图 ${toRemove.length} 个模型/LoRA 标签`);
+                                  tagTick.set(tagTick.get() + 1);
+                                  await api.ui.notify({
+                                    severity: 'info',
+                                    title: 'ComfyUI 标签',
+                                    message: `已清除本图 ${toRemove.length} 个模型/LoRA 标签`,
+                                  });
+                                } else {
+                                  statusMsg.set('本图没有可清除的模型标签');
+                                }
+                              } catch (err) {
+                                const msg = err instanceof Error ? err.message : String(err);
+                                statusMsg.set(`清除标签失败：${msg}`);
+                                await api.ui.notify({ severity: 'error', title: '清除标签失败', message: msg });
+                              }
+                            })();
+                          },
+                        })
+                      : null,
+                  )
+                : null,
+              metadata.positivePrompt
+                ? ui.toggle({
+                    id: 'btnWritePromptToDesc',
+                    label: '将正向提示词写入右侧「描述」栏',
+                    value: false,
+                    description: '写入后可直接在右侧栏多行查看，且支持 Serpent 顶部搜索框全文检索提示词',
+                    onChange: () => {
+                      statusMsg.set('正在写入右侧描述栏…');
+                      void (async () => {
+                        try {
+                          const fresh = await api.assets.getMetadata(assetId);
+                          const updated = await api.assets.setMetadata({
+                            assetId,
+                            expectedVersion: fresh.entityVersion,
+                            description: metadata.positivePrompt.slice(0, 10_000),
+                          });
+                          assetMeta = updated;
+                          statusMsg.set('已将正向提示词写入右侧「描述」栏');
+                          await api.ui.notify({
+                            severity: 'info',
+                            title: 'ComfyUI 元数据',
+                            message: '已将正向提示词写入右侧「描述」栏',
+                          });
+                        } catch (err) {
+                          const msg = err instanceof Error ? err.message : String(err);
+                          statusMsg.set(`写入描述失败：${msg}`);
+                          await api.ui.notify({ severity: 'error', title: '写入描述失败', message: msg });
+                        }
+                      })();
+                    },
+                  })
+                : null,
+            ),
+          );
         }
 
         // Tab 2: Manual URL bindings separated cleanly by Models vs LoRAs
@@ -790,21 +932,8 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
     store.tagConfig = sanitizeTagConfig(draftTagConfig);
     await saveStore(serpent, store, dataDir);
 
-    let taggedCount = 0;
-    if (dialogResult.applyTagsOnSave === true && metadata.format !== 'none') {
-      const tags = buildTagsForMetadata(metadata, store.tagConfig);
-      if (tags.length > 0) {
-        const tagIds = await ensureTagIds(api, tags);
-        if (tagIds.length > 0) {
-          await api.tags.assign([assetId], tagIds);
-          taggedCount = tagIds.length;
-        }
-      }
-    }
-
     const parts: string[] = [];
     if (savedLinksCount > 0) parts.push(`已更新 ${savedLinksCount} 条模型链接`);
-    if (taggedCount > 0) parts.push(`已写入 ${taggedCount} 个标签`);
     if (parts.length === 0) parts.push('设置已保存');
     if (invalidUrls.length > 0) {
       parts.push(`跳过 ${invalidUrls.length} 个格式无效的链接（需 http/https 开头）`);
