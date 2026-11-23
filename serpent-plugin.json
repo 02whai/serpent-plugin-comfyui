@@ -1,0 +1,104 @@
+{
+  "manifestVersion": 1,
+  "id": "com.whai.comfyui-metadata",
+  "version": "0.1.2",
+  "name": "ComfyUI Metadata",
+  "description": "Parse ComfyUI PNG/WebP metadata locally, bind reusable webpage URLs per model/LoRA, and batch-tag assets.",
+  "locales": {
+    "zh-CN": {
+      "name": "ComfyUI 元数据管理",
+      "description": "纯本地解析 ComfyUI 生成元数据（正向提示词、底模、LoRA 及权重、采样参数），支持按模型绑定跳转链接与一键批量打标。"
+    },
+    "en": {
+      "name": "ComfyUI Metadata",
+      "description": "Parse ComfyUI PNG/WebP metadata locally (positive prompt, models, LoRAs with weights, sampling params), bind reusable model URLs, and batch-tag assets."
+    }
+  },
+  "author": "02whai",
+  "license": "MIT",
+  "repository": "https://github.com/02whai/serpent-plugin-comfyui",
+  "engines": {
+    "serpent": ">=0.1.0 <1.0.0",
+    "pluginApi": 1
+  },
+  "runtime": {
+    "mode": "unrestricted",
+    "entry": "entry/main.js",
+    "instanceScope": "library"
+  },
+  "permissions": [
+    "library.read",
+    "asset.read",
+    "content.read",
+    "tag.read",
+    "tag.write",
+    "storage.read",
+    "storage.write",
+    "data.files",
+    "ui.inspector",
+    "ui.dialogs",
+    "ui.notify"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "comfy.inspect",
+        "title": "查看参数与链接",
+        "when": "selection.assetCount == 1"
+      },
+      {
+        "id": "comfy.tag-selected",
+        "title": "提取模型 / LoRA 打标",
+        "when": "selection.assetCount >= 1"
+      },
+      {
+        "id": "comfy.manage-links",
+        "title": "管理 ComfyUI 模型链接库"
+      }
+    ],
+    "menus": {
+      "asset": [
+        {
+          "id": "comfyui-menu",
+          "title": "ComfyUI 元数据",
+          "group": "comfyui",
+          "submenu": [
+            {
+              "command": "comfy.inspect",
+              "when": "selection.assetCount == 1"
+            },
+            {
+              "command": "comfy.tag-selected",
+              "when": "selection.assetCount >= 1"
+            },
+            {
+              "command": "comfy.manage-links"
+            }
+          ]
+        }
+      ]
+    },
+    "toolbar": [],
+    "inspector": [
+      {
+        "id": "inspector-comfy-inspect",
+        "command": "comfy.inspect",
+        "title": "ComfyUI 元数据"
+      },
+      {
+        "id": "inspector-comfy-tag",
+        "command": "comfy.tag-selected",
+        "title": "ComfyUI 打标"
+      }
+    ],
+    "viewerActions": [],
+    "shortcuts": [],
+    "views": [],
+    "dialogs": [],
+    "settings": [],
+    "hooks": [],
+    "jobs": [],
+    "providers": [],
+    "themes": []
+  }
+}

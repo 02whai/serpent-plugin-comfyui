@@ -1,0 +1,20 @@
+{
+  "name": "serpent-plugin-comfyui",
+  "version": "0.1.2",
+  "private": true,
+  "description": "Serpent plugin for ComfyUI metadata parsing, manual model/LoRA URL binding, and automatic tagging.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "pack": "node scripts/build.mjs && node scripts/pack.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "archiver": "^7.0.1",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}
