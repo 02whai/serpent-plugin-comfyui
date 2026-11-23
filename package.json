@@ -1,6 +1,6 @@
 {
   "name": "serpent-plugin-comfyui",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Serpent plugin for ComfyUI metadata parsing, manual model/LoRA URL binding, and automatic tagging.",
   "license": "MIT",

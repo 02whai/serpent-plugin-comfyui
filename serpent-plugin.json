@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "id": "com.whai.comfyui-metadata",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "name": "ComfyUI Metadata",
   "description": "Parse ComfyUI PNG/WebP metadata locally, bind reusable webpage URLs per model/LoRA, and batch-tag assets.",
   "locales": {
@@ -54,6 +54,11 @@
         "when": "selection.assetCount >= 1"
       },
       {
+        "id": "comfy.untag-selected",
+        "title": "清除模型 / LoRA 标签",
+        "when": "selection.assetCount >= 1"
+      },
+      {
         "id": "comfy.manage-links",
         "title": "管理 ComfyUI 模型链接库"
       }
@@ -71,6 +76,10 @@
             },
             {
               "command": "comfy.tag-selected",
+              "when": "selection.assetCount >= 1"
+            },
+            {
+              "command": "comfy.untag-selected",
               "when": "selection.assetCount >= 1"
             },
             {

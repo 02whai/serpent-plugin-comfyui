@@ -158,6 +158,39 @@ const INITIAL_READ_BYTES = 1024 * 1024;
 const MAX_TOTAL_READ_BYTES = 8 * 1024 * 1024;
 const MAX_INLINE_BIND_ITEMS = 12;
 
+function unwrapAssetMetadata(raw: unknown): AssetMetadataRecord | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const candidate = (obj.metadata && typeof obj.metadata === 'object' ? obj.metadata : obj) as Record<string, unknown>;
+  if (typeof candidate.assetId !== 'string') return null;
+  return {
+    assetId: candidate.assetId,
+    description: typeof candidate.description === 'string' ? candidate.description : null,
+    tags: Array.isArray(candidate.tags)
+      ? (candidate.tags as Array<{ id: string; name: string; source: 'user' | 'ai' }>)
+      : [],
+    entityVersion: typeof candidate.entityVersion === 'number' ? candidate.entityVersion : 0,
+  };
+}
+
+function collectCandidateTagNames(metadata: ComfyMetadata, cfg: TaggingConfig): Set<string> {
+  const set = new Set<string>();
+  const variants: TaggingConfig[] = [
+    cfg,
+    { ...cfg, usePrefix: false },
+    { ...cfg, stripExtension: !cfg.stripExtension },
+    { ...cfg, usePrefix: false, stripExtension: !cfg.stripExtension },
+    { includeModels: true, includeLoras: true, usePrefix: true, modelPrefix: 'model:', loraPrefix: 'lora:', stripExtension: false },
+    { includeModels: true, includeLoras: true, usePrefix: true, modelPrefix: 'model:', loraPrefix: 'lora:', stripExtension: true },
+  ];
+  for (const v of variants) {
+    for (const name of buildTagsForMetadata(metadata, v)) {
+      set.add(name.toLowerCase());
+    }
+  }
+  return set;
+}
+
 function clip(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   return `${text.slice(0, Math.max(1, maxLen - 1))}…`;
@@ -481,7 +514,7 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
 
     let assetMeta: AssetMetadataRecord | null = null;
     try {
-      assetMeta = await api.assets.getMetadata(assetId);
+      assetMeta = unwrapAssetMetadata(await api.assets.getMetadata(assetId));
     } catch {
       assetMeta = null;
     }
@@ -489,22 +522,6 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
     const activeAssetTagNames = new Set<string>(
       (assetMeta?.tags ?? []).map((t) => t.name.toLowerCase()),
     );
-
-    const buildAllCandidateTagNames = (cfg: TaggingConfig): Set<string> => {
-      const set = new Set<string>();
-      const variants: TaggingConfig[] = [
-        cfg,
-        { ...cfg, usePrefix: false },
-        { ...cfg, stripExtension: !cfg.stripExtension },
-        { ...cfg, usePrefix: false, stripExtension: !cfg.stripExtension },
-      ];
-      for (const v of variants) {
-        for (const name of buildTagsForMetadata(metadata, v)) {
-          set.add(name.toLowerCase());
-        }
-      }
-      return set;
-    };
 
     // Live mutable draft kept across tab switches
     const draftUrls = new Map<string, string>();
@@ -570,7 +587,7 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
           ? buildTagsForMetadata(metadata, draftTagConfig)
           : [];
         const matchedExistingCount = previewTags.filter((t) => activeAssetTagNames.has(t.toLowerCase())).length;
-        const candidateSet = metadata.format !== 'none' ? buildAllCandidateTagNames(draftTagConfig) : new Set<string>();
+        const candidateSet = metadata.format !== 'none' ? collectCandidateTagNames(metadata, draftTagConfig) : new Set<string>();
         const removableCount = Array.from(activeAssetTagNames).filter((name) => candidateSet.has(name)).length;
 
         const overviewChildren: WidgetChild[] = [];
@@ -679,7 +696,7 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
                                 if (tagIds.length > 0) {
                                   await api.tags.assign([assetId], tagIds);
                                   for (const t of previewTags) activeAssetTagNames.add(t.toLowerCase());
-                                  assetMeta = await api.assets.getMetadata(assetId).catch(() => assetMeta);
+                                  assetMeta = unwrapAssetMetadata(await api.assets.getMetadata(assetId).catch(() => null)) ?? assetMeta;
                                   statusMsg.set(`已立即写入 ${tagIds.length} 个模型/LoRA 标签`);
                                   tagTick.set(tagTick.get() + 1);
                                   await api.ui.notify({
@@ -706,9 +723,9 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
                             statusMsg.set('正在清除本图模型标签…');
                             void (async () => {
                               try {
-                                const freshMeta = await api.assets.getMetadata(assetId);
+                                const freshMeta = unwrapAssetMetadata(await api.assets.getMetadata(assetId));
                                 assetMeta = freshMeta;
-                                const toRemove = (freshMeta.tags ?? [])
+                                const toRemove = (freshMeta?.tags ?? [])
                                   .filter((t) => candidateSet.has(t.name.toLowerCase()));
                                 if (toRemove.length > 0) {
                                   await api.tags.remove([assetId], toRemove.map((t) => t.id));
@@ -744,13 +761,15 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
                       statusMsg.set('正在写入右侧描述栏…');
                       void (async () => {
                         try {
-                          const fresh = await api.assets.getMetadata(assetId);
-                          const updated = await api.assets.setMetadata({
-                            assetId,
-                            expectedVersion: fresh.entityVersion,
-                            description: metadata.positivePrompt.slice(0, 10_000),
-                          });
-                          assetMeta = updated;
+                          const fresh = unwrapAssetMetadata(await api.assets.getMetadata(assetId));
+                          const updated = unwrapAssetMetadata(
+                            await api.assets.setMetadata({
+                              assetId,
+                              expectedVersion: fresh?.entityVersion ?? 0,
+                              description: metadata.positivePrompt.slice(0, 10_000),
+                            }),
+                          );
+                          assetMeta = updated ?? assetMeta;
                           statusMsg.set('已将正向提示词写入右侧「描述」栏');
                           await api.ui.notify({
                             severity: 'info',
@@ -971,6 +990,49 @@ export async function setup(apiOrContext: SerpentPluginApi | { serpent: SerpentP
       severity: 'info',
       title: 'ComfyUI 自动打标完成',
       message: `已为 ${summary.taggedAssets}/${summary.total} 项写入标签（共涉及 ${summary.appliedNames.length} 个模型/LoRA 标签${summary.skippedNoMetadata > 0 ? `，跳过无元数据 ${summary.skippedNoMetadata} 项` : ''}）。`,
+    });
+  });
+
+  // 2b) Batch-remove ComfyUI model/LoRA tags from selected assets
+  serpent.commands.register('comfy.untag-selected', async (context) => {
+    const api = resolveScopedApi(serpent, context);
+    const { assetIds } = extractSelection(context);
+    if (assetIds.length === 0) {
+      await api.ui.notify({ severity: 'info', title: 'ComfyUI 清除标签', message: '请先选择至少一张图片。' });
+      return;
+    }
+
+    const { data: store } = await loadStore(serpent);
+    let cleanedAssets = 0;
+    let removedTotal = 0;
+
+    for (const assetId of assetIds) {
+      let bytes: Buffer;
+      try {
+        bytes = await readAssetBytesForMetadata(api, assetId);
+      } catch {
+        continue;
+      }
+      const meta = parseComfyMetadataFromBytes(bytes);
+      if (meta.format === 'none') continue;
+      const candidates = collectCandidateTagNames(meta, store.tagConfig);
+      if (candidates.size === 0) continue;
+
+      const freshMeta = unwrapAssetMetadata(await api.assets.getMetadata(assetId).catch(() => null));
+      const toRemove = (freshMeta?.tags ?? []).filter((t) => candidates.has(t.name.toLowerCase()));
+      if (toRemove.length > 0) {
+        await api.tags.remove([assetId], toRemove.map((t) => t.id));
+        cleanedAssets++;
+        removedTotal += toRemove.length;
+      }
+    }
+
+    await api.ui.notify({
+      severity: 'info',
+      title: 'ComfyUI 清除标签完成',
+      message: cleanedAssets > 0
+        ? `已从 ${cleanedAssets}/${assetIds.length} 项图片中移除 ${removedTotal} 个模型/LoRA 标签。`
+        : '所选图片中没有检测到由本插件写入的模型/LoRA 标签。',
     });
   });
 
